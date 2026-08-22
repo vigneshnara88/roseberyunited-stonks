@@ -19,9 +19,9 @@ from math import log
 from typing import Any, Callable
 
 HOME_YEAR = 2037
-MAX_DEPTH_ROUTES = 18
-MAX_PAIR_ROUTES = 12
-MAX_TOTAL_ROUTES = 40
+MAX_DEPTH_ROUTES = 8
+MAX_PAIR_ROUTES = 6
+MAX_TOTAL_ROUTES = 14
 EXACT_KNAPSACK_CAPITAL = 2500
 EXACT_KNAPSACK_UNITS = 120
 
@@ -133,14 +133,8 @@ def candidate_routes(timeline: dict[int, dict[str, dict[str, int]]],
     all_depths = sorted({HOME_YEAR - y for y in reachable
                          if 0 <= HOME_YEAR - y <= max_depth})
     profitable_depths = promising_depths(timeline, reachable, max_depth)
-    if len(all_depths) > MAX_DEPTH_ROUTES:
-        depths = sorted(set(
-            all_depths[:6]
-            + profitable_depths[:MAX_DEPTH_ROUTES]
-            + [max_depth]
-        ))
-    else:
-        depths = all_depths
+    depths = sorted(set(all_depths[:2] + profitable_depths[:MAX_DEPTH_ROUTES]
+                        + ([max_depth] if max_depth > 0 else [])))
 
     for depth in depths:
         if depth == 0:
@@ -258,12 +252,10 @@ def build_policies() -> list[Policy]:
     return [
         ("best_future", "roi", False),
         ("best_future", "profit", False),
-        ("best_future", "cheap_roi", False),
         ("suffix_peak", "roi", False),
         ("best_rate", "rate", False),
         ("earliest_profit", "rate", False),
         ("final_2037", "roi", False),
-        ("final_2037", "profit", False),
     ]
 
 
