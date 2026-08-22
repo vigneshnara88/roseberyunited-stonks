@@ -19,9 +19,9 @@ from math import log
 from typing import Any, Callable
 
 HOME_YEAR = 2037
-MAX_DEPTH_ROUTES = 4
-MAX_PAIR_ROUTES = 6
-MAX_TOTAL_ROUTES = 12
+MAX_DEPTH_ROUTES = 8
+MAX_PAIR_ROUTES = 15
+MAX_TOTAL_ROUTES = 30
 EXACT_KNAPSACK_CAPITAL = 2500
 EXACT_KNAPSACK_UNITS = 120
 FINAL_EXACT_CAPITAL = 20000
@@ -269,6 +269,7 @@ def build_policies(fast: bool = False) -> list[Policy]:
         ("suffix_peak", "roi", False),
         ("best_rate", "rate", False),
         ("earliest_profit", "rate", False),
+        ("earliest_profit", "roi", False),
         ("final_2037", "roi", False),
         ("final_2037", "profit", False),
     ]
