@@ -163,6 +163,11 @@ def candidate_routes(timeline: dict[int, dict[str, dict[str, int]]],
     deepest_data_depth = max(data_depths or [0])
     if deepest_data_depth > 0:
         routes.append(round_trip_route(reachable, deepest_data_depth))
+    if energy >= 20 and deepest_data_depth > 0:
+        for depth in repeated_scan_depths(reachable, energy, max_depth):
+            repeated = repeat_route(round_trip_route(reachable, depth), energy)
+            if len(repeated) > 1:
+                routes.append(repeated)
     if fast:
         return routes if len(routes) > 1 else [[HOME_YEAR]]
 
@@ -236,6 +241,41 @@ def repeat_route(route: list[int], energy: int) -> list[int]:
     for _ in range(cycles):
         out.extend(route[1:])
     return compact_route(out)
+
+
+def repeated_scan_depths(reachable: list[int], energy: int,
+                         max_depth: int) -> list[int]:
+    data_depths = sorted({
+        HOME_YEAR - year
+        for year in reachable
+        if 0 < HOME_YEAR - year <= max_depth
+    })
+    if not data_depths:
+        return []
+
+    out: list[int] = []
+
+    def add(depth: int) -> None:
+        if depth > 0 and depth not in out:
+            out.append(depth)
+
+    add(data_depths[-1])
+
+    scored: list[tuple[int, int, int]] = []
+    for depth in data_depths:
+        loop_cost = 2 * depth
+        cycles = min(MAX_REPEAT_CYCLES, energy // loop_cost)
+        if cycles > 1:
+            scored.append((loop_cost * cycles, cycles, depth))
+    for _, _, depth in sorted(scored, reverse=True)[:3]:
+        add(depth)
+    for target_cycles in (7, 8, 12, 16, MAX_REPEAT_CYCLES):
+        target_depth = energy // (2 * target_cycles)
+        choices = [depth for depth in data_depths if depth <= target_depth]
+        if choices:
+            add(max(choices))
+
+    return out
 
 
 def high_energy_cycle_plan(timeline: dict[int, dict[str, dict[str, int]]],
@@ -399,6 +439,7 @@ def build_policies(fast: bool = False) -> list[Policy]:
     if fast:
         return [
             ("best_future", "roi", False),
+            ("best_future", "cheap_roi", False),
             ("earliest_profit", "rate", False),
             ("final_2037", "roi", False),
         ]
