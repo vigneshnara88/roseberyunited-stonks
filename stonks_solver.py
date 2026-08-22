@@ -106,21 +106,22 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
                     best_profit = improved_result.capital - capital
                     best_actions = improved_actions
 
-    cycle_actions = high_energy_cycle_plan(timeline, energy, capital)
-    if cycle_actions:
-        result = simulate(case, cycle_actions)
-        if result.ok and result.capital > best_value:
-            best_value = result.capital
-            best_profit = result.capital - capital
-            best_actions = cycle_actions
+    if not large_case:
+        cycle_actions = high_energy_cycle_plan(timeline, energy, capital)
+        if cycle_actions:
+            result = simulate(case, cycle_actions)
+            if result.ok and result.capital > best_value:
+                best_value = result.capital
+                best_profit = result.capital - capital
+                best_actions = cycle_actions
 
-    bundle_actions = bundled_cycle_plan(timeline, energy, capital)
-    if bundle_actions:
-        result = simulate(case, bundle_actions)
-        if result.ok and result.capital > best_value:
-            best_value = result.capital
-            best_profit = result.capital - capital
-            best_actions = bundle_actions
+        bundle_actions = bundled_cycle_plan(timeline, energy, capital)
+        if bundle_actions:
+            result = simulate(case, bundle_actions)
+            if result.ok and result.capital > best_value:
+                best_value = result.capital
+                best_profit = result.capital - capital
+                best_actions = bundle_actions
 
     exact_allowed = allow_exact and not large_case
 
