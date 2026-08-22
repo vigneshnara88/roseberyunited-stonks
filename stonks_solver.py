@@ -64,8 +64,10 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
     if energy <= 0 or capital <= 0 or not timeline:
         return []
 
-    routes = candidate_routes(timeline, energy, fast=fast)
-    policies = build_policies(fast=fast)
+    large_case = energy >= 20
+    search_fast = fast or large_case
+    routes = candidate_routes(timeline, energy, fast=search_fast)
+    policies = build_policies(fast=search_fast)
     best_actions: list[str] = []
     best_value = capital
     best_profit = 0
@@ -98,7 +100,9 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
             best_profit = result.capital - capital
             best_actions = cycle_actions
 
-    final_actions = final_2037_exact_plan(case) if allow_exact else None
+    exact_allowed = allow_exact and not large_case
+
+    final_actions = final_2037_exact_plan(case) if exact_allowed else None
     if final_actions is not None:
         result = simulate(case, final_actions)
         if result.ok and result.capital > best_value:
@@ -106,7 +110,7 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
             best_profit = result.capital - capital
             best_actions = final_actions
 
-    exact_actions = exact_search(case) if allow_exact else None
+    exact_actions = exact_search(case) if exact_allowed else None
     if exact_actions is not None:
         result = simulate(case, exact_actions)
         if result.ok and result.capital > best_value:
