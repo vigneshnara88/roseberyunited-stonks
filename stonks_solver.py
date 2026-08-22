@@ -312,7 +312,7 @@ def high_energy_cycle_plan(timeline: dict[int, dict[str, dict[str, int]]],
         "capital": starting_capital,
         "timeline": timeline,
     }
-    for mode in ("mixed", "profit"):
+    for mode in ("mixed", "efficiency", "profit"):
         actions = chain_cycle_plan(timeline, energy, starting_capital, mode)
         result = simulate(case, actions)
         if result.ok and result.capital > best_value:
