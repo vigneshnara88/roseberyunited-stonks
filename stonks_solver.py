@@ -21,7 +21,9 @@ from typing import Any, Callable
 HOME_YEAR = 2037
 MAX_DEPTH_ROUTES = 8
 MAX_PAIR_ROUTES = 15
-MAX_TOTAL_ROUTES = 30
+MAX_TOTAL_ROUTES = 80
+MAX_REPEAT_ROUTES = 10
+MAX_REPEAT_CYCLES = 25
 EXACT_KNAPSACK_CAPITAL = 2500
 EXACT_KNAPSACK_UNITS = 120
 FINAL_EXACT_CAPITAL = 20000
@@ -167,6 +169,11 @@ def candidate_routes(timeline: dict[int, dict[str, dict[str, int]]],
     # Try direct buy/sell pair tours for non-2037 sell peaks.
     pair_routes = profitable_pair_routes(timeline, energy)
     routes.extend(pair_routes[:MAX_PAIR_ROUTES])
+    if energy >= 20:
+        for route in pair_routes[:MAX_REPEAT_ROUTES]:
+            repeated = repeat_route(route, energy)
+            if len(repeated) > len(route):
+                routes.append(repeated)
 
     # Deterministic shortest plans first; longer speculative plans later.
     unique: list[list[int]] = []
@@ -206,6 +213,17 @@ def route_cost(route: list[int]) -> int:
     if not route:
         return 0
     return sum(abs(route[i] - route[i - 1]) for i in range(1, len(route)))
+
+
+def repeat_route(route: list[int], energy: int) -> list[int]:
+    cost = route_cost(route)
+    if cost <= 0 or cost > energy:
+        return route
+    cycles = min(MAX_REPEAT_CYCLES, energy // cost)
+    out = [HOME_YEAR]
+    for _ in range(cycles):
+        out.extend(route[1:])
+    return compact_route(out)
 
 
 def promising_depths(timeline: dict[int, dict[str, dict[str, int]]],
