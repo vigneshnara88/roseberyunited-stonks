@@ -432,16 +432,19 @@ def build_policies(fast: bool = False) -> list[Policy]:
         return [
             ("best_future", "roi", False),
             ("best_future", "cheap_roi", False),
+            ("best_future_nondom", "roi", False),
             ("earliest_profit", "rate", False),
             ("final_2037", "roi", False),
         ]
     return [
         ("best_future", "roi", False),
+        ("best_future_nondom", "roi", False),
         ("best_future", "profit", False),
         ("best_future", "cheap_roi", False),
         ("suffix_peak", "roi", False),
         ("best_rate", "rate", False),
         ("earliest_profit", "rate", False),
+        ("earliest_profit_nondom", "rate", False),
         ("earliest_profit", "roi", False),
         ("final_2037", "roi", False),
         ("final_2037", "profit", False),
@@ -521,6 +524,9 @@ def buy_candidates(timeline: dict[int, dict[str, dict[str, int]]],
                                         quote["price"], target_mode)
         if target is None:
             continue
+        if skips_later_cheaper(target_mode) and later_cheaper_lot_exists(
+                timeline, route, index, target[0], stock, quote["price"]):
+            continue
         sell_index, sell_year, sell_price = target
         out.append(Lot(year, stock, quote["price"], remaining, sell_index,
                        sell_year, sell_price))
@@ -531,6 +537,7 @@ def precompute_targets(timeline: dict[int, dict[str, dict[str, int]]],
                        route: list[int],
                        mode: str) -> dict[tuple[int, str], tuple[int, int, int]]:
     """Cache target sell years for modes whose best future is price-only."""
+    mode = base_target_mode(mode)
     if mode in {"earliest_profit", "best_rate"}:
         return {}
 
@@ -561,6 +568,7 @@ def precompute_targets(timeline: dict[int, dict[str, dict[str, int]]],
 def choose_sell_target(timeline: dict[int, dict[str, dict[str, int]]],
                        route: list[int], index: int, stock: str, buy_price: int,
                        mode: str) -> tuple[int, int, int] | None:
+    mode = base_target_mode(mode)
     future: list[tuple[int, int, int]] = []
     for j in range(index + 1, len(route)):
         q = timeline.get(route[j], {}).get(stock)
@@ -591,6 +599,25 @@ def choose_sell_target(timeline: dict[int, dict[str, dict[str, int]]],
                    key=lambda x: x[0])
 
     return max(future, key=lambda x: (x[2], -x[0]))
+
+
+def base_target_mode(mode: str) -> str:
+    return mode.removesuffix("_nondom")
+
+
+def skips_later_cheaper(mode: str) -> bool:
+    return mode.endswith("_nondom")
+
+
+def later_cheaper_lot_exists(timeline: dict[int, dict[str, dict[str, int]]],
+                             route: list[int], start_index: int,
+                             sell_index: int, stock: str,
+                             buy_price: int) -> bool:
+    for j in range(start_index + 1, sell_index):
+        quote = timeline.get(route[j], {}).get(stock)
+        if quote and quote["qty"] > 0 and quote["price"] < buy_price:
+            return True
+    return False
 
 
 def choose_lots(candidates: list[Lot], capital: int, ordering: str,
