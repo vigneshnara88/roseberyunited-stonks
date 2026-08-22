@@ -13,18 +13,24 @@ RECENT = deque(maxlen=5)
 
 @app.get("/")
 @app.get("/health")
+@app.get("/v3")
 @app.get("/v3/health")
+@app.get("/v4")
 @app.get("/v4/health")
+@app.get("/v5")
+@app.get("/v5/health")
 def health():
     return jsonify({"ok": True, "service": "time-travelling-stonks-man"})
 
 
 @app.post("/v3")
 @app.post("/v4")
+@app.post("/v5")
 @app.post("/stonks")
 @app.post("/api/stonks")
 @app.post("/v3/stonks")
 @app.post("/v4/stonks")
+@app.post("/v5/stonks")
 def stonks():
     started = perf_counter()
     payload = request.get_json(force=True, silent=False)
@@ -50,6 +56,7 @@ def stonks():
 @app.get("/debug")
 @app.get("/v3/debug")
 @app.get("/v4/debug")
+@app.get("/v5/debug")
 def debug():
     return jsonify({"recent": list(RECENT)})
 
