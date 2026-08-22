@@ -29,6 +29,12 @@ EXACT_KNAPSACK_CAPITAL = 2500
 EXACT_KNAPSACK_UNITS = 120
 FINAL_EXACT_CAPITAL = 20000
 FINAL_EXACT_BLOCKS = 180
+POSTPROCESS_ROUTE_POLICIES = frozenset({
+    ("best_future", "roi", False, 1.0),
+    ("best_future_nondom", "roi", False, 1.0),
+    ("best_future", "roi", False, 1.05),
+})
+POSTPROCESS_ITERATIONS = 3
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,13 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
                 best_value = result.capital
                 best_profit = profit
                 best_actions = actions
+            if energy >= 20 and policy in POSTPROCESS_ROUTE_POLICIES:
+                improved_actions, improved_result = improve_plan(
+                    case, timeline, capital, energy, actions)
+                if improved_result.ok and improved_result.capital > best_value:
+                    best_value = improved_result.capital
+                    best_profit = improved_result.capital - capital
+                    best_actions = improved_actions
 
     cycle_actions = high_energy_cycle_plan(timeline, energy, capital)
     if cycle_actions:
@@ -128,36 +141,46 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
             best_actions = exact_actions
 
     if best_actions and energy >= 20:
-        orders = ("roi", "profit") if len(timeline) <= 12 else ("roi",)
-        for order in orders:
-            filled_actions = slack_fill_plan(timeline, capital, best_actions,
-                                             order)
-            if filled_actions == best_actions:
-                continue
-            result = simulate(case, filled_actions)
-            if result.ok and result.capital > best_value:
-                best_value = result.capital
-                best_profit = result.capital - capital
-                best_actions = filled_actions
-
-        detour_actions = detour_fill_plan(timeline, capital, energy,
-                                          best_actions)
-        if detour_actions != best_actions:
-            result = simulate(case, detour_actions)
-            if result.ok and result.capital > best_value:
-                best_value = result.capital
-                best_profit = result.capital - capital
-                best_actions = detour_actions
-
-        delayed_actions = delayed_sell_plan(timeline, capital, best_actions)
-        if delayed_actions != best_actions:
-            result = simulate(case, delayed_actions)
-            if result.ok and result.capital > best_value:
-                best_value = result.capital
-                best_profit = result.capital - capital
-                best_actions = delayed_actions
+        improved_actions, improved_result = improve_plan(
+            case, timeline, capital, energy, best_actions)
+        if improved_result.ok and improved_result.capital > best_value:
+            best_value = improved_result.capital
+            best_profit = improved_result.capital - capital
+            best_actions = improved_actions
 
     return best_actions if best_profit > 0 else []
+
+
+def improve_plan(case: dict[str, Any],
+                 timeline: dict[int, dict[str, dict[str, int]]],
+                 capital: int, energy: int,
+                 actions: list[str]) -> tuple[list[str], SimResult]:
+    best_actions = actions
+    best_result = simulate(case, best_actions)
+    if not best_result.ok:
+        return best_actions, best_result
+
+    for _ in range(POSTPROCESS_ITERATIONS):
+        changed = False
+        candidates = [slack_fill_plan(timeline, capital, best_actions, "roi")]
+        if len(timeline) <= 12:
+            candidates.append(slack_fill_plan(timeline, capital, best_actions,
+                                              "profit"))
+        candidates.append(detour_fill_plan(timeline, capital, energy,
+                                           best_actions))
+        candidates.append(delayed_sell_plan(timeline, capital, best_actions))
+
+        for candidate_actions in candidates:
+            if candidate_actions == best_actions:
+                continue
+            result = simulate(case, candidate_actions)
+            if result.ok and result.capital > best_result.capital:
+                best_actions = candidate_actions
+                best_result = result
+                changed = True
+        if not changed:
+            break
+    return best_actions, best_result
 
 
 def normalize_timeline(raw: dict[str, Any]) -> dict[int, dict[str, dict[str, int]]]:
