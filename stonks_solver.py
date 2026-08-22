@@ -19,9 +19,9 @@ from math import log
 from typing import Any, Callable
 
 HOME_YEAR = 2037
-MAX_DEPTH_ROUTES = 8
+MAX_DEPTH_ROUTES = 4
 MAX_PAIR_ROUTES = 6
-MAX_TOTAL_ROUTES = 14
+MAX_TOTAL_ROUTES = 12
 EXACT_KNAPSACK_CAPITAL = 2500
 EXACT_KNAPSACK_UNITS = 120
 
@@ -46,10 +46,13 @@ class Lot:
 
 
 def solve_cases(cases: list[dict[str, Any]]) -> list[list[str]]:
-    return [solve_case(case) for case in cases]
+    bulk = len(cases) >= 25
+    return [solve_case(case, allow_exact=not bulk, fast=bulk)
+            for case in cases]
 
 
-def solve_case(case: dict[str, Any]) -> list[str]:
+def solve_case(case: dict[str, Any], allow_exact: bool = True,
+               fast: bool = False) -> list[str]:
     energy = int(case.get("energy", 0))
     capital = int(case.get("capital", 0))
     timeline = normalize_timeline(case.get("timeline") or {})
@@ -57,8 +60,10 @@ def solve_case(case: dict[str, Any]) -> list[str]:
     if energy <= 0 or capital <= 0 or not timeline:
         return []
 
-    routes = candidate_routes(timeline, energy)
-    policies = build_policies()
+    quote_count = sum(len(stocks) for stocks in timeline.values())
+    fast = fast or quote_count > 250
+    routes = candidate_routes(timeline, energy, fast=fast)
+    policies = build_policies(fast=fast)
     best_actions: list[str] = []
     best_value = capital
     best_profit = 0
@@ -83,7 +88,7 @@ def solve_case(case: dict[str, Any]) -> list[str]:
                 best_profit = profit
                 best_actions = actions
 
-    exact_actions = exact_search(case)
+    exact_actions = exact_search(case) if allow_exact else None
     if exact_actions is not None:
         result = simulate(case, exact_actions)
         if result.ok and result.capital > best_value:
@@ -120,7 +125,7 @@ def normalize_timeline(raw: dict[str, Any]) -> dict[int, dict[str, dict[str, int
 
 
 def candidate_routes(timeline: dict[int, dict[str, dict[str, int]]],
-                     energy: int) -> list[list[int]]:
+                     energy: int, fast: bool = False) -> list[list[int]]:
     years = sorted(y for y in timeline if y <= HOME_YEAR)
     data_years = sorted(set(years + [HOME_YEAR]), reverse=True)
     min_reachable = max(1, HOME_YEAR - energy)
@@ -130,19 +135,14 @@ def candidate_routes(timeline: dict[int, dict[str, dict[str, int]]],
 
     routes: list[list[int]] = [[HOME_YEAR]]
     max_depth = energy // 2
-    all_depths = sorted({HOME_YEAR - y for y in reachable
-                         if 0 <= HOME_YEAR - y <= max_depth})
     profitable_depths = promising_depths(timeline, reachable, max_depth)
-    depths = sorted(set(all_depths[:2] + profitable_depths[:MAX_DEPTH_ROUTES]
-                        + ([max_depth] if max_depth > 0 else [])))
-
-    for depth in depths:
-        if depth == 0:
-            continue
-        routes.append(round_trip_route(reachable, depth))
-
-    if max_depth > 0:
-        routes.append(round_trip_route(reachable, max_depth))
+    data_depths = [HOME_YEAR - y for y in reachable
+                   if 0 <= HOME_YEAR - y <= max_depth]
+    deepest_data_depth = max(data_depths or [0])
+    if deepest_data_depth > 0:
+        routes.append(round_trip_route(reachable, deepest_data_depth))
+    if fast:
+        return routes if len(routes) > 1 else [[HOME_YEAR]]
 
     # Sometimes a short round trip to 2037 grows cash early, then a second
     # deeper trip spends it better. Try compact two-trip combinations.
@@ -161,7 +161,6 @@ def candidate_routes(timeline: dict[int, dict[str, dict[str, int]]],
     routes.extend(pair_routes[:MAX_PAIR_ROUTES])
 
     # Deterministic shortest plans first; longer speculative plans later.
-    routes.sort(key=lambda r: (route_cost(r), len(r), tuple(r)))
     unique: list[list[int]] = []
     seen: set[tuple[int, ...]] = set()
     for route in routes:
@@ -248,12 +247,17 @@ def profitable_pair_routes(timeline: dict[int, dict[str, dict[str, int]]],
 Policy = tuple[str, str, bool]
 
 
-def build_policies() -> list[Policy]:
+def build_policies(fast: bool = False) -> list[Policy]:
+    if fast:
+        return [
+            ("best_future", "roi", False),
+            ("earliest_profit", "rate", False),
+            ("final_2037", "roi", False),
+        ]
     return [
         ("best_future", "roi", False),
         ("best_future", "profit", False),
         ("suffix_peak", "roi", False),
-        ("best_rate", "rate", False),
         ("earliest_profit", "rate", False),
         ("final_2037", "roi", False),
     ]
@@ -263,6 +267,7 @@ def plan_for_route(timeline: dict[int, dict[str, dict[str, int]]],
                    starting_capital: int, route: list[int],
                    policy: Policy) -> list[str]:
     target_mode, ordering, exact_small = policy
+    target_lookup = precompute_targets(timeline, route, target_mode)
     capital = starting_capital
     actions: list[str] = []
     current_year = HOME_YEAR
@@ -293,7 +298,7 @@ def plan_for_route(timeline: dict[int, dict[str, dict[str, int]]],
             actions.append(sell_action(stock, qty))
 
         candidates = buy_candidates(timeline, route, index, used_lots,
-                                    target_mode)
+                                    target_mode, target_lookup)
         chosen = choose_lots(candidates, capital, ordering, exact_small)
         for lot, qty in chosen:
             if qty <= 0 or lot.price * qty > capital:
@@ -313,20 +318,57 @@ def plan_for_route(timeline: dict[int, dict[str, dict[str, int]]],
 def buy_candidates(timeline: dict[int, dict[str, dict[str, int]]],
                    route: list[int], index: int,
                    used_lots: set[tuple[int, str]],
-                   target_mode: str) -> list[Lot]:
+                   target_mode: str,
+                   target_lookup: dict[tuple[int, str],
+                                       tuple[int, int, int]]) -> list[Lot]:
     year = route[index]
     out: list[Lot] = []
     for stock, quote in timeline.get(year, {}).items():
         if quote["qty"] <= 0 or (year, stock) in used_lots:
             continue
-        target = choose_sell_target(timeline, route, index, stock,
-                                    quote["price"], target_mode)
+        target = target_lookup.get((index, stock))
+        if target is not None and target[2] <= quote["price"]:
+            target = None
+        if target is None:
+            target = choose_sell_target(timeline, route, index, stock,
+                                        quote["price"], target_mode)
         if target is None:
             continue
         sell_index, sell_year, sell_price = target
         out.append(Lot(year, stock, quote["price"], quote["qty"], sell_index,
                        sell_year, sell_price))
     return out
+
+
+def precompute_targets(timeline: dict[int, dict[str, dict[str, int]]],
+                       route: list[int],
+                       mode: str) -> dict[tuple[int, str], tuple[int, int, int]]:
+    """Cache target sell years for modes whose best future is price-only."""
+    if mode in {"earliest_profit", "best_rate"}:
+        return {}
+
+    lookup: dict[tuple[int, str], tuple[int, int, int]] = {}
+
+    if mode == "final_2037":
+        next_home: int | None = None
+        for i in range(len(route) - 1, -1, -1):
+            if next_home is not None:
+                for stock, quote in timeline.get(HOME_YEAR, {}).items():
+                    lookup[(i, stock)] = (next_home, HOME_YEAR, quote["price"])
+            if route[i] == HOME_YEAR:
+                next_home = i
+        return lookup
+
+    best_by_stock: dict[str, tuple[int, int, int]] = {}
+    for i in range(len(route) - 1, -1, -1):
+        for stock, target in best_by_stock.items():
+            lookup[(i, stock)] = target
+        for stock, quote in timeline.get(route[i], {}).items():
+            current = (i, route[i], quote["price"])
+            old = best_by_stock.get(stock)
+            if old is None or quote["price"] >= old[2]:
+                best_by_stock[stock] = current
+    return lookup
 
 
 def choose_sell_target(timeline: dict[int, dict[str, dict[str, int]]],
