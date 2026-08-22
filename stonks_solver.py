@@ -14,6 +14,7 @@ at an intermediate year frees cash that can then be reinvested deeper in time.
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from math import log
 from typing import Any, Callable
@@ -125,6 +126,19 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
             best_value = result.capital
             best_profit = result.capital - capital
             best_actions = exact_actions
+
+    if best_actions and energy >= 20:
+        orders = ("roi", "profit") if len(timeline) <= 12 else ("roi",)
+        for order in orders:
+            filled_actions = slack_fill_plan(timeline, capital, best_actions,
+                                             order)
+            if filled_actions == best_actions:
+                continue
+            result = simulate(case, filled_actions)
+            if result.ok and result.capital > best_value:
+                best_value = result.capital
+                best_profit = result.capital - capital
+                best_actions = filled_actions
 
     return best_actions if best_profit > 0 else []
 
@@ -764,6 +778,156 @@ def choose_lots(candidates: list[Lot], capital: int, ordering: str,
         chosen.append((lot, qty))
         remaining -= qty * lot.price
     return chosen
+
+
+def slack_fill_plan(timeline: dict[int, dict[str, dict[str, int]]],
+                    starting_capital: int, actions: list[str],
+                    ordering: str) -> list[str]:
+    """Buy extra lots along an existing route without reducing future cash.
+
+    This pass is deliberately conservative: it only uses cash that remains
+    available at every later block until the inserted sell action, so it cannot
+    invalidate the original plan's later purchases.
+    """
+    blocks = action_blocks(actions)
+    if len(blocks) <= 1:
+        return actions
+
+    bought: Counter[tuple[int, str]] = Counter()
+    capital = starting_capital
+    cap_after: list[int] = []
+    block_min: list[int] = []
+    for year, block_actions, _, _ in blocks:
+        lowest = capital
+        for action in block_actions:
+            parsed = parse_action(action)
+            if parsed is None:
+                return actions
+            kind, stock, raw_qty = parsed
+            if kind not in {"b", "s"}:
+                continue
+            qty = int(raw_qty)
+            price = timeline.get(year, {}).get(stock, {}).get("price")
+            if price is None:
+                return actions
+            if kind == "b":
+                capital -= price * qty
+                bought[(year, stock)] += qty
+            else:
+                capital += price * qty
+            lowest = min(lowest, capital)
+        block_min.append(lowest)
+        cap_after.append(capital)
+
+    targets = best_future_targets_for_blocks(timeline, blocks)
+    candidates: list[tuple[tuple[float, ...], int, int, str, int]] = []
+    for index, (year, _, _, _) in enumerate(blocks[:-1]):
+        for stock, quote in timeline.get(year, {}).items():
+            target = targets[index].get(stock)
+            if target is None:
+                continue
+            sell_index, _, sell_price = target
+            if sell_index <= index or sell_price <= quote["price"]:
+                continue
+            unit_profit = sell_price - quote["price"]
+            roi = sell_price / quote["price"]
+            span = sell_index - index
+            key = slack_candidate_key(ordering, roi, unit_profit, span,
+                                      quote["price"])
+            candidates.append((key, index, sell_index, stock, quote["price"]))
+
+    used_after = [0] * len(blocks)
+    used_block = [0] * len(blocks)
+    extra_bought: Counter[tuple[int, str]] = Counter()
+    inserted_buys: dict[int, list[str]] = defaultdict(list)
+    inserted_sells: dict[int, list[str]] = defaultdict(list)
+
+    for _, buy_index, sell_index, stock, buy_price in sorted(
+            candidates, reverse=True):
+        buy_year = blocks[buy_index][0]
+        available = (timeline[buy_year][stock]["qty"]
+                     - bought[(buy_year, stock)]
+                     - extra_bought[(buy_year, stock)])
+        if available <= 0:
+            continue
+
+        slack_values = [
+            cap_after[i] - used_after[i]
+            for i in range(buy_index, sell_index)
+        ]
+        slack_values.extend(
+            block_min[i] - used_block[i]
+            for i in range(buy_index + 1, sell_index)
+        )
+        cash_slack = min(slack_values) if slack_values else 0
+        qty = min(available, cash_slack // buy_price)
+        if qty <= 0:
+            continue
+
+        cost = qty * buy_price
+        for i in range(buy_index, sell_index):
+            used_after[i] += cost
+        for i in range(buy_index + 1, sell_index):
+            used_block[i] += cost
+        extra_bought[(buy_year, stock)] += qty
+        inserted_buys[buy_index].append(buy_action(stock, qty))
+        inserted_sells[sell_index].append(sell_action(stock, qty))
+
+    if not inserted_buys and not inserted_sells:
+        return actions
+
+    out: list[str] = []
+    for index, (_, block_actions, jump, _) in enumerate(blocks):
+        out.extend(sorted(inserted_sells.get(index, [])))
+        out.extend(block_actions)
+        out.extend(sorted(inserted_buys.get(index, [])))
+        if jump is not None:
+            out.append(jump)
+    return out
+
+
+def action_blocks(actions: list[str]) -> list[tuple[int, list[str], str | None,
+                                                   int | None]]:
+    blocks: list[tuple[int, list[str], str | None, int | None]] = []
+    year = HOME_YEAR
+    block_actions: list[str] = []
+    for action in actions:
+        parsed = parse_action(action)
+        if parsed is None:
+            continue
+        kind, second, third = parsed
+        if kind == "j":
+            blocks.append((year, block_actions, action, int(third)))
+            year = int(third)
+            block_actions = []
+        else:
+            block_actions.append(action)
+    blocks.append((year, block_actions, None, None))
+    return blocks
+
+
+def best_future_targets_for_blocks(
+    timeline: dict[int, dict[str, dict[str, int]]],
+    blocks: list[tuple[int, list[str], str | None, int | None]],
+) -> list[dict[str, tuple[int, int, int]]]:
+    lookup: list[dict[str, tuple[int, int, int]]] = [{} for _ in blocks]
+    best_by_stock: dict[str, tuple[int, int, int]] = {}
+    for index in range(len(blocks) - 1, -1, -1):
+        lookup[index] = best_by_stock.copy()
+        year = blocks[index][0]
+        for stock, quote in timeline.get(year, {}).items():
+            old = best_by_stock.get(stock)
+            current = (index, year, quote["price"])
+            if old is None or quote["price"] >= old[2]:
+                best_by_stock[stock] = current
+    return lookup
+
+
+def slack_candidate_key(ordering: str, roi: float, unit_profit: int,
+                        span: int, price: int) -> tuple[float, ...]:
+    if ordering == "profit":
+        return (unit_profit, roi, -span, -price)
+    return (roi, unit_profit, -span, -price)
 
 
 def ordering_key(ordering: str) -> Callable[[Lot], tuple[float, ...]]:
