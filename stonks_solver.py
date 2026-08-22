@@ -19,6 +19,11 @@ from math import log
 from typing import Any, Callable
 
 HOME_YEAR = 2037
+MAX_DEPTH_ROUTES = 18
+MAX_PAIR_ROUTES = 12
+MAX_TOTAL_ROUTES = 40
+EXACT_KNAPSACK_CAPITAL = 2500
+EXACT_KNAPSACK_UNITS = 120
 
 
 @dataclass(frozen=True)
@@ -125,8 +130,17 @@ def candidate_routes(timeline: dict[int, dict[str, dict[str, int]]],
 
     routes: list[list[int]] = [[HOME_YEAR]]
     max_depth = energy // 2
-    depths = sorted({HOME_YEAR - y for y in reachable
-                     if 0 <= HOME_YEAR - y <= max_depth})
+    all_depths = sorted({HOME_YEAR - y for y in reachable
+                         if 0 <= HOME_YEAR - y <= max_depth})
+    profitable_depths = promising_depths(timeline, reachable, max_depth)
+    if len(all_depths) > MAX_DEPTH_ROUTES:
+        depths = sorted(set(
+            all_depths[:6]
+            + profitable_depths[:MAX_DEPTH_ROUTES]
+            + [max_depth]
+        ))
+    else:
+        depths = all_depths
 
     for depth in depths:
         if depth == 0:
@@ -138,7 +152,6 @@ def candidate_routes(timeline: dict[int, dict[str, dict[str, int]]],
 
     # Sometimes a short round trip to 2037 grows cash early, then a second
     # deeper trip spends it better. Try compact two-trip combinations.
-    profitable_depths = promising_depths(timeline, reachable, max_depth)
     for first in profitable_depths[:8]:
         remaining = energy - 2 * first
         if remaining < 2:
@@ -151,11 +164,20 @@ def candidate_routes(timeline: dict[int, dict[str, dict[str, int]]],
 
     # Try direct buy/sell pair tours for non-2037 sell peaks.
     pair_routes = profitable_pair_routes(timeline, energy)
-    routes.extend(pair_routes[:80])
+    routes.extend(pair_routes[:MAX_PAIR_ROUTES])
 
     # Deterministic shortest plans first; longer speculative plans later.
     routes.sort(key=lambda r: (route_cost(r), len(r), tuple(r)))
-    return routes
+    unique: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+    for route in routes:
+        key = tuple(route)
+        if key not in seen:
+            seen.add(key)
+            unique.append(route)
+        if len(unique) >= MAX_TOTAL_ROUTES:
+            break
+    return unique
 
 
 def round_trip_route(reachable: list[int], depth: int) -> list[int]:
@@ -202,13 +224,14 @@ def promising_depths(timeline: dict[int, dict[str, dict[str, int]]],
             scored.append((score, depth))
     scored.sort(reverse=True)
     if not scored:
-        return sorted({d for d in range(1, max_depth + 1)})
+        return list(range(1, min(max_depth, MAX_DEPTH_ROUTES) + 1))
     return [d for _, d in scored]
 
 
 def profitable_pair_routes(timeline: dict[int, dict[str, dict[str, int]]],
                            energy: int) -> list[list[int]]:
-    years = sorted(timeline, reverse=True)
+    min_reachable = max(1, HOME_YEAR - energy)
+    years = sorted((y for y in timeline if y >= min_reachable), reverse=True)
     routes: list[tuple[float, list[int]]] = []
     for buy_year in years:
         for stock, quote in timeline[buy_year].items():
@@ -232,26 +255,16 @@ Policy = tuple[str, str, bool]
 
 
 def build_policies() -> list[Policy]:
-    sell_targets = [
-        "best_future",
-        "earliest_profit",
-        "best_rate",
-        "final_2037",
-        "suffix_peak",
+    return [
+        ("best_future", "roi", False),
+        ("best_future", "profit", False),
+        ("best_future", "cheap_roi", False),
+        ("suffix_peak", "roi", False),
+        ("best_rate", "rate", False),
+        ("earliest_profit", "rate", False),
+        ("final_2037", "roi", False),
+        ("final_2037", "profit", False),
     ]
-    orderings = [
-        "roi",
-        "rate",
-        "profit",
-        "cheap_roi",
-        "early_roi",
-    ]
-    policies: list[Policy] = []
-    for target in sell_targets:
-        for ordering in orderings:
-            policies.append((target, ordering, False))
-            policies.append((target, ordering, True))
-    return policies
 
 
 def plan_for_route(timeline: dict[int, dict[str, dict[str, int]]],
@@ -364,7 +377,8 @@ def choose_lots(candidates: list[Lot], capital: int, ordering: str,
     if not candidates or capital <= 0:
         return []
 
-    if exact_small and capital <= 40000 and sum(c.qty for c in candidates) <= 600:
+    if (exact_small and capital <= EXACT_KNAPSACK_CAPITAL
+            and sum(c.qty for c in candidates) <= EXACT_KNAPSACK_UNITS):
         exact = exact_knapsack(candidates, capital)
         if exact:
             return exact
@@ -568,12 +582,12 @@ def exact_search(case: dict[str, Any]) -> list[str] | None:
                 lots.append((year, stock, quote["price"], quote["qty"]))
                 total_qty += quote["qty"]
 
-    if (len(stocks) > 5 or len(years) > 8 or energy > 14 or
-            total_qty > 22 or capital > 5000):
+    if (len(stocks) > 4 or len(years) > 5 or energy > 8 or
+            total_qty > 14 or capital > 500):
         return None
 
     stock_index = {stock: i for i, stock in enumerate(stocks)}
-    max_states = 250_000
+    max_states = 60_000
     visited_states = 0
     memo: dict[tuple[int, int, int, tuple[int, ...], int],
                tuple[int, tuple[str, ...]]] = {}
