@@ -236,10 +236,29 @@ def repeat_route(route: list[int], energy: int) -> list[int]:
 
 def high_energy_cycle_plan(timeline: dict[int, dict[str, dict[str, int]]],
                            energy: int, starting_capital: int) -> list[str]:
-    """Greedily compound via complete home-to-home trade cycles."""
+    """Greedily compound through profitable cycles, returning home at the end."""
     if energy < 20:
         return []
 
+    best_actions: list[str] = []
+    best_value = starting_capital
+    case = {
+        "energy": energy,
+        "capital": starting_capital,
+        "timeline": timeline,
+    }
+    for mode in ("mixed", "profit_rate", "profit", "compound", "rate", "roi"):
+        actions = chain_cycle_plan(timeline, energy, starting_capital, mode)
+        result = simulate(case, actions)
+        if result.ok and result.capital > best_value:
+            best_value = result.capital
+            best_actions = actions
+    return best_actions
+
+
+def chain_cycle_plan(timeline: dict[int, dict[str, dict[str, int]]],
+                     energy: int, starting_capital: int,
+                     mode: str) -> list[str]:
     years = sorted(timeline)
     remaining = {(year, stock): quote["qty"]
                  for year, stocks in timeline.items()
@@ -263,18 +282,18 @@ def high_energy_cycle_plan(timeline: dict[int, dict[str, dict[str, int]]],
                     sell_quote = timeline[sell_year].get(stock)
                     if not sell_quote or sell_quote["price"] <= buy_price:
                         continue
-                    cost = (abs(current_year - buy_year)
-                            + abs(buy_year - sell_year)
-                            + abs(sell_year - HOME_YEAR))
-                    if cost <= 0 or cost > energy:
+                    travel = (abs(current_year - buy_year)
+                              + abs(buy_year - sell_year))
+                    if travel <= 0 or travel + abs(sell_year - HOME_YEAR) > energy:
                         continue
                     profit = (sell_quote["price"] - buy_price) * qty
-                    score = profit / cost
+                    roi = sell_quote["price"] / buy_price
+                    score = cycle_score(mode, profit, roi, qty, travel)
                     candidate = (
                         score,
                         profit,
-                        sell_quote["price"] / buy_price,
-                        -cost,
+                        roi,
+                        -travel,
                         buy_year,
                         sell_year,
                         stock,
@@ -305,12 +324,24 @@ def high_energy_cycle_plan(timeline: dict[int, dict[str, dict[str, int]]],
         actions.append(sell_action(stock, qty))
         capital += sell_price * qty
 
-        if current_year != HOME_YEAR:
-            actions.append(jump_action(current_year, HOME_YEAR))
-            energy -= abs(current_year - HOME_YEAR)
-            current_year = HOME_YEAR
-
+    if current_year != HOME_YEAR and abs(current_year - HOME_YEAR) <= energy:
+        actions.append(jump_action(current_year, HOME_YEAR))
     return actions
+
+
+def cycle_score(mode: str, profit: int, roi: float, qty: int,
+                travel: int) -> float | tuple[float, ...]:
+    if mode == "profit":
+        return float(profit)
+    if mode == "compound":
+        return log(roi) * qty / travel
+    if mode == "rate":
+        return log(roi) / travel
+    if mode == "roi":
+        return (roi, profit / travel)
+    if mode == "mixed":
+        return (profit / travel) * (roi ** 0.5)
+    return profit / travel
 
 
 def promising_depths(timeline: dict[int, dict[str, dict[str, int]]],
