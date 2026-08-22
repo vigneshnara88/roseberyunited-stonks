@@ -90,6 +90,14 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
                 best_profit = profit
                 best_actions = actions
 
+    cycle_actions = high_energy_cycle_plan(timeline, energy, capital)
+    if cycle_actions:
+        result = simulate(case, cycle_actions)
+        if result.ok and result.capital > best_value:
+            best_value = result.capital
+            best_profit = result.capital - capital
+            best_actions = cycle_actions
+
     final_actions = final_2037_exact_plan(case) if allow_exact else None
     if final_actions is not None:
         result = simulate(case, final_actions)
@@ -224,6 +232,85 @@ def repeat_route(route: list[int], energy: int) -> list[int]:
     for _ in range(cycles):
         out.extend(route[1:])
     return compact_route(out)
+
+
+def high_energy_cycle_plan(timeline: dict[int, dict[str, dict[str, int]]],
+                           energy: int, starting_capital: int) -> list[str]:
+    """Greedily compound via complete home-to-home trade cycles."""
+    if energy < 20:
+        return []
+
+    years = sorted(timeline)
+    remaining = {(year, stock): quote["qty"]
+                 for year, stocks in timeline.items()
+                 for stock, quote in stocks.items()}
+    actions: list[str] = []
+    current_year = HOME_YEAR
+    capital = starting_capital
+
+    while energy > 0 and len(actions) < 5000:
+        best: tuple[float, int, float, int, int, int, str, int] | None = None
+        for buy_year in years:
+            if abs(current_year - buy_year) + abs(buy_year - HOME_YEAR) > energy:
+                continue
+            for stock, quote in timeline[buy_year].items():
+                buy_price = quote["price"]
+                qty = min(remaining.get((buy_year, stock), 0),
+                          capital // buy_price)
+                if qty <= 0:
+                    continue
+                for sell_year in years:
+                    sell_quote = timeline[sell_year].get(stock)
+                    if not sell_quote or sell_quote["price"] <= buy_price:
+                        continue
+                    cost = (abs(current_year - buy_year)
+                            + abs(buy_year - sell_year)
+                            + abs(sell_year - HOME_YEAR))
+                    if cost <= 0 or cost > energy:
+                        continue
+                    profit = (sell_quote["price"] - buy_price) * qty
+                    score = profit / cost
+                    candidate = (
+                        score,
+                        profit,
+                        sell_quote["price"] / buy_price,
+                        -cost,
+                        buy_year,
+                        sell_year,
+                        stock,
+                        qty,
+                    )
+                    if best is None or candidate > best:
+                        best = candidate
+
+        if best is None:
+            break
+
+        _, _, _, _, buy_year, sell_year, stock, qty = best
+        buy_price = timeline[buy_year][stock]["price"]
+        sell_price = timeline[sell_year][stock]["price"]
+
+        if current_year != buy_year:
+            actions.append(jump_action(current_year, buy_year))
+            energy -= abs(current_year - buy_year)
+            current_year = buy_year
+        actions.append(buy_action(stock, qty))
+        capital -= buy_price * qty
+        remaining[(buy_year, stock)] -= qty
+
+        if current_year != sell_year:
+            actions.append(jump_action(current_year, sell_year))
+            energy -= abs(current_year - sell_year)
+            current_year = sell_year
+        actions.append(sell_action(stock, qty))
+        capital += sell_price * qty
+
+        if current_year != HOME_YEAR:
+            actions.append(jump_action(current_year, HOME_YEAR))
+            energy -= abs(current_year - HOME_YEAR)
+            current_year = HOME_YEAR
+
+    return actions
 
 
 def promising_depths(timeline: dict[int, dict[str, dict[str, int]]],
