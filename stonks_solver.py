@@ -261,15 +261,7 @@ def repeated_scan_depths(reachable: list[int], energy: int,
 
     add(data_depths[-1])
 
-    scored: list[tuple[int, int, int]] = []
-    for depth in data_depths:
-        loop_cost = 2 * depth
-        cycles = min(MAX_REPEAT_CYCLES, energy // loop_cost)
-        if cycles > 1:
-            scored.append((loop_cost * cycles, cycles, depth))
-    for _, _, depth in sorted(scored, reverse=True)[:3]:
-        add(depth)
-    for target_cycles in (7, 8, 12, 16, MAX_REPEAT_CYCLES):
+    for target_cycles in (7, 8):
         target_depth = energy // (2 * target_cycles)
         choices = [depth for depth in data_depths if depth <= target_depth]
         if choices:
