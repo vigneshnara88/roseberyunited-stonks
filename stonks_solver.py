@@ -24,6 +24,8 @@ MAX_PAIR_ROUTES = 6
 MAX_TOTAL_ROUTES = 12
 EXACT_KNAPSACK_CAPITAL = 2500
 EXACT_KNAPSACK_UNITS = 120
+FINAL_EXACT_CAPITAL = 20000
+FINAL_EXACT_BLOCKS = 180
 
 
 @dataclass(frozen=True)
@@ -60,8 +62,6 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
     if energy <= 0 or capital <= 0 or not timeline:
         return []
 
-    quote_count = sum(len(stocks) for stocks in timeline.values())
-    fast = fast or quote_count > 250
     routes = candidate_routes(timeline, energy, fast=fast)
     policies = build_policies(fast=fast)
     best_actions: list[str] = []
@@ -87,6 +87,14 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
                 best_value = result.capital
                 best_profit = profit
                 best_actions = actions
+
+    final_actions = final_2037_exact_plan(case) if allow_exact else None
+    if final_actions is not None:
+        result = simulate(case, final_actions)
+        if result.ok and result.capital > best_value:
+            best_value = result.capital
+            best_profit = result.capital - capital
+            best_actions = final_actions
 
     exact_actions = exact_search(case) if allow_exact else None
     if exact_actions is not None:
@@ -257,9 +265,12 @@ def build_policies(fast: bool = False) -> list[Policy]:
     return [
         ("best_future", "roi", False),
         ("best_future", "profit", False),
+        ("best_future", "cheap_roi", False),
         ("suffix_peak", "roi", False),
+        ("best_rate", "rate", False),
         ("earliest_profit", "rate", False),
         ("final_2037", "roi", False),
+        ("final_2037", "profit", False),
     ]
 
 
@@ -585,6 +596,89 @@ def parse_action(raw: str) -> tuple[str, str, str] | None:
         stock, qty = rest.rsplit("-", 1)
         return kind, stock, qty
     return None
+
+
+def final_2037_exact_plan(case: dict[str, Any]) -> list[str] | None:
+    """Exact bounded knapsack for the intended buy-past/sell-2037 pattern."""
+    timeline = normalize_timeline(case.get("timeline") or {})
+    home = timeline.get(HOME_YEAR, {})
+    if not home:
+        return None
+    try:
+        energy = int(case.get("energy", 0))
+        capital = int(case.get("capital", 0))
+    except (TypeError, ValueError):
+        return None
+    if capital > FINAL_EXACT_CAPITAL:
+        return None
+
+    min_year = max(1, HOME_YEAR - energy // 2)
+    lots: list[tuple[int, str, int, int, int]] = []
+    blocks: list[tuple[int, int, int, int]] = []
+    for year, stocks in timeline.items():
+        if year < min_year or year > HOME_YEAR:
+            continue
+        for stock, quote in stocks.items():
+            sell_quote = home.get(stock)
+            if not sell_quote or quote["qty"] <= 0:
+                continue
+            buy_price = quote["price"]
+            sell_price = sell_quote["price"]
+            if sell_price <= buy_price:
+                continue
+            lot_idx = len(lots)
+            lots.append((year, stock, buy_price, sell_price, quote["qty"]))
+            remaining = quote["qty"]
+            block = 1
+            while remaining > 0:
+                qty = min(block, remaining)
+                blocks.append((lot_idx, qty, buy_price * qty,
+                               (sell_price - buy_price) * qty))
+                remaining -= qty
+                block <<= 1
+
+    if not blocks or len(blocks) > FINAL_EXACT_BLOCKS:
+        return None
+
+    dp: dict[int, tuple[int, tuple[int, ...]]] = {0: (0, ())}
+    for block_idx, (_, _, cost, value) in enumerate(blocks):
+        additions: dict[int, tuple[int, tuple[int, ...]]] = {}
+        for spent, (profit, path) in dp.items():
+            new_spent = spent + cost
+            if new_spent > capital:
+                continue
+            new_profit = profit + value
+            old_profit = additions.get(
+                new_spent, dp.get(new_spent, (-1, ())))[0]
+            if new_profit > old_profit:
+                additions[new_spent] = (new_profit, path + (block_idx,))
+        dp.update(additions)
+
+    spent, (profit, path) = max(dp.items(), key=lambda item: item[1][0])
+    if profit <= 0 or spent <= 0:
+        return []
+
+    selected: dict[tuple[int, str], int] = {}
+    sells: dict[str, int] = {}
+    for block_idx in path:
+        lot_idx, qty, _, _ = blocks[block_idx]
+        year, stock, _, _, _ = lots[lot_idx]
+        selected[(year, stock)] = selected.get((year, stock), 0) + qty
+        sells[stock] = sells.get(stock, 0) + qty
+
+    actions: list[str] = []
+    current = HOME_YEAR
+    for year in sorted({year for year, _ in selected}, reverse=True):
+        if year != current:
+            actions.append(jump_action(current, year))
+            current = year
+        for stock in sorted(stock for y, stock in selected if y == year):
+            actions.append(buy_action(stock, selected[(year, stock)]))
+    if current != HOME_YEAR:
+        actions.append(jump_action(current, HOME_YEAR))
+    for stock in sorted(sells):
+        actions.append(sell_action(stock, sells[stock]))
+    return actions
 
 
 def exact_search(case: dict[str, Any]) -> list[str] | None:
