@@ -149,6 +149,14 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
                 best_profit = result.capital - capital
                 best_actions = detour_actions
 
+        delayed_actions = delayed_sell_plan(timeline, capital, best_actions)
+        if delayed_actions != best_actions:
+            result = simulate(case, delayed_actions)
+            if result.ok and result.capital > best_value:
+                best_value = result.capital
+                best_profit = result.capital - capital
+                best_actions = delayed_actions
+
     return best_actions if best_profit > 0 else []
 
 
@@ -1021,6 +1029,110 @@ def detour_fill_plan(timeline: dict[int, dict[str, dict[str, int]]],
             out.append(jump_action(buy_year, year))
         if jump is not None:
             out.append(jump)
+    return out
+
+
+def delayed_sell_plan(timeline: dict[int, dict[str, dict[str, int]]],
+                      starting_capital: int,
+                      actions: list[str]) -> list[str]:
+    """Move affordable sells to later route visits with better prices."""
+    if not actions:
+        return actions
+
+    year = HOME_YEAR
+    capital = starting_capital
+    cap_after: list[int] = []
+    block_starts: list[tuple[int, int]] = [(0, HOME_YEAR)]
+    sells: list[tuple[int, str, int, int]] = []
+
+    for index, action in enumerate(actions):
+        parsed = parse_action(action)
+        if parsed is None:
+            return actions
+        kind, second, third = parsed
+        if kind == "j":
+            year = int(third)
+            block_starts.append((index + 1, year))
+        elif kind == "b":
+            qty = int(third)
+            quote = timeline.get(year, {}).get(second)
+            if quote is None:
+                return actions
+            capital -= quote["price"] * qty
+        elif kind == "s":
+            qty = int(third)
+            quote = timeline.get(year, {}).get(second)
+            if quote is None:
+                return actions
+            sell_price = quote["price"]
+            sells.append((index, second, qty, sell_price))
+            capital += sell_price * qty
+        cap_after.append(capital)
+
+    if not sells:
+        return actions
+
+    candidates: list[tuple[tuple[float, ...], int, int, str, int, int]] = []
+    for sell_index, stock, qty, old_price in sells:
+        if qty <= 0:
+            continue
+        for target_pos, target_year in block_starts:
+            if target_pos <= sell_index:
+                continue
+            quote = timeline.get(target_year, {}).get(stock)
+            if quote is None or quote["price"] <= old_price:
+                continue
+            gain = quote["price"] - old_price
+            span = target_pos - sell_index
+            key = (gain / old_price, gain / max(1, span), gain)
+            candidates.append((key, sell_index, target_pos, stock, old_price,
+                               qty))
+
+    if not candidates:
+        return actions
+
+    used_cash = [0] * len(actions)
+    remaining_sell_qty = {index: qty for index, _, qty, _ in sells}
+    reduced_sells: Counter[int] = Counter()
+    inserted_sells: dict[int, list[str]] = defaultdict(list)
+
+    for _, sell_index, target_pos, stock, old_price, _ in sorted(
+            candidates, reverse=True):
+        available = remaining_sell_qty.get(sell_index, 0)
+        if available <= 0:
+            continue
+        cash_slack = min(
+            (cap_after[i] - used_cash[i]
+             for i in range(sell_index, target_pos)),
+            default=0,
+        )
+        qty = min(available, cash_slack // old_price)
+        if qty <= 0:
+            continue
+        locked_cash = qty * old_price
+        for i in range(sell_index, target_pos):
+            used_cash[i] += locked_cash
+        remaining_sell_qty[sell_index] -= qty
+        reduced_sells[sell_index] += qty
+        inserted_sells[target_pos].append(sell_action(stock, qty))
+
+    if not reduced_sells:
+        return actions
+
+    out: list[str] = []
+    for index, action in enumerate(actions):
+        out.extend(sorted(inserted_sells.get(index, [])))
+        parsed = parse_action(action)
+        if parsed is None:
+            return actions
+        kind, stock, raw_qty = parsed
+        if kind == "s" and reduced_sells.get(index, 0):
+            qty = int(raw_qty) - reduced_sells[index]
+            if qty > 0:
+                out.append(sell_action(stock, qty))
+        else:
+            out.append(action)
+    out.extend(sorted(inserted_sells.get(len(actions), [])))
     return out
 
 
