@@ -285,7 +285,7 @@ def plan_for_route(timeline: dict[int, dict[str, dict[str, int]]],
     current_year = HOME_YEAR
     holdings: dict[str, int] = {}
     scheduled: dict[tuple[int, str], int] = {}
-    used_lots: set[tuple[int, str]] = set()
+    bought_qty: dict[tuple[int, str], int] = {}
 
     for index, year in enumerate(route):
         if year != current_year:
@@ -309,14 +309,15 @@ def plan_for_route(timeline: dict[int, dict[str, dict[str, int]]],
             capital += qty * price
             actions.append(sell_action(stock, qty))
 
-        candidates = buy_candidates(timeline, route, index, used_lots,
+        candidates = buy_candidates(timeline, route, index, bought_qty,
                                     target_mode, target_lookup)
         chosen = choose_lots(candidates, capital, ordering, exact_small)
         for lot, qty in chosen:
             if qty <= 0 or lot.price * qty > capital:
                 continue
             capital -= lot.price * qty
-            used_lots.add((lot.year, lot.stock))
+            bought_key = (lot.year, lot.stock)
+            bought_qty[bought_key] = bought_qty.get(bought_key, 0) + qty
             holdings[lot.stock] = holdings.get(lot.stock, 0) + qty
             scheduled[(lot.sell_index, lot.stock)] = (
                 scheduled.get((lot.sell_index, lot.stock), 0) + qty)
@@ -329,14 +330,15 @@ def plan_for_route(timeline: dict[int, dict[str, dict[str, int]]],
 
 def buy_candidates(timeline: dict[int, dict[str, dict[str, int]]],
                    route: list[int], index: int,
-                   used_lots: set[tuple[int, str]],
+                   bought_qty: dict[tuple[int, str], int],
                    target_mode: str,
                    target_lookup: dict[tuple[int, str],
                                        tuple[int, int, int]]) -> list[Lot]:
     year = route[index]
     out: list[Lot] = []
     for stock, quote in timeline.get(year, {}).items():
-        if quote["qty"] <= 0 or (year, stock) in used_lots:
+        remaining = quote["qty"] - bought_qty.get((year, stock), 0)
+        if remaining <= 0:
             continue
         target = target_lookup.get((index, stock))
         if target is not None and target[2] <= quote["price"]:
@@ -347,7 +349,7 @@ def buy_candidates(timeline: dict[int, dict[str, dict[str, int]]],
         if target is None:
             continue
         sell_index, sell_year, sell_price = target
-        out.append(Lot(year, stock, quote["price"], quote["qty"], sell_index,
+        out.append(Lot(year, stock, quote["price"], remaining, sell_index,
                        sell_year, sell_price))
     return out
 
@@ -510,7 +512,7 @@ def simulate(case: dict[str, Any], actions: list[str]) -> SimResult:
     energy = int(case.get("energy", 0))
     year = HOME_YEAR
     holdings: dict[str, int] = {}
-    bought: set[tuple[int, str]] = set()
+    bought: dict[tuple[int, str], int] = {}
 
     for raw in actions:
         if not isinstance(raw, str):
@@ -541,12 +543,13 @@ def simulate(case: dict[str, Any], actions: list[str]) -> SimResult:
             quote = timeline.get(year, {}).get(stock)
             if not quote or qty <= 0 or qty > quote["qty"]:
                 return SimResult(False, capital, energy, "bad buy")
-            if (year, stock) in bought:
-                return SimResult(False, capital, energy, "duplicate lot buy")
+            already = bought.get((year, stock), 0)
+            if already + qty > quote["qty"]:
+                return SimResult(False, capital, energy, "buy exceeds lot qty")
             cost = quote["price"] * qty
             if cost > capital:
                 return SimResult(False, capital, energy, "insufficient capital")
-            bought.add((year, stock))
+            bought[(year, stock)] = already + qty
             capital -= cost
             holdings[stock] = holdings.get(stock, 0) + qty
         elif kind == "s":
