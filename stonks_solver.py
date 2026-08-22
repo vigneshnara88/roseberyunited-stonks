@@ -140,6 +140,15 @@ def solve_case(case: dict[str, Any], allow_exact: bool = True,
                 best_profit = result.capital - capital
                 best_actions = filled_actions
 
+        detour_actions = detour_fill_plan(timeline, capital, energy,
+                                          best_actions)
+        if detour_actions != best_actions:
+            result = simulate(case, detour_actions)
+            if result.ok and result.capital > best_value:
+                best_value = result.capital
+                best_profit = result.capital - capital
+                best_actions = detour_actions
+
     return best_actions if best_profit > 0 else []
 
 
@@ -884,6 +893,146 @@ def slack_fill_plan(timeline: dict[int, dict[str, dict[str, int]]],
         if jump is not None:
             out.append(jump)
     return out
+
+
+def detour_fill_plan(timeline: dict[int, dict[str, dict[str, int]]],
+                     starting_capital: int, energy: int,
+                     actions: list[str]) -> list[str]:
+    """Use leftover energy for profitable buy-only detours from route stops."""
+    spare_energy = energy - action_energy_cost(actions)
+    if spare_energy <= 0:
+        return actions
+
+    blocks = action_blocks(actions)
+    if len(blocks) <= 1:
+        return actions
+
+    bought: Counter[tuple[int, str]] = Counter()
+    capital = starting_capital
+    cap_after: list[int] = []
+    block_min: list[int] = []
+    for year, block_actions, _, _ in blocks:
+        lowest = capital
+        for action in block_actions:
+            parsed = parse_action(action)
+            if parsed is None:
+                return actions
+            kind, stock, raw_qty = parsed
+            if kind not in {"b", "s"}:
+                continue
+            qty = int(raw_qty)
+            price = timeline.get(year, {}).get(stock, {}).get("price")
+            if price is None:
+                return actions
+            if kind == "b":
+                capital -= price * qty
+                bought[(year, stock)] += qty
+            else:
+                capital += price * qty
+            lowest = min(lowest, capital)
+        block_min.append(lowest)
+        cap_after.append(capital)
+
+    targets = best_future_targets_for_blocks(timeline, blocks)
+    candidates: list[tuple[tuple[float, ...], int, int, int, str, int]] = []
+    for index, (route_year, _, _, _) in enumerate(blocks[:-1]):
+        for buy_year, stocks in timeline.items():
+            if buy_year == route_year:
+                continue
+            travel = 2 * abs(route_year - buy_year)
+            if travel <= 0 or travel > spare_energy:
+                continue
+            for stock, quote in stocks.items():
+                target = targets[index].get(stock)
+                if target is None:
+                    continue
+                sell_index, _, sell_price = target
+                if sell_index <= index or sell_price <= quote["price"]:
+                    continue
+                remaining = quote["qty"] - bought[(buy_year, stock)]
+                if remaining <= 0:
+                    continue
+                total_profit = (sell_price - quote["price"]) * remaining
+                roi = sell_price / quote["price"]
+                key = (
+                    total_profit / max(1, travel),
+                    roi,
+                    total_profit,
+                    -travel,
+                )
+                candidates.append((key, index, sell_index, buy_year, stock,
+                                   quote["price"]))
+
+    if not candidates:
+        return actions
+
+    used_after = [0] * len(blocks)
+    used_block = [0] * len(blocks)
+    extra_bought: Counter[tuple[int, str]] = Counter()
+    detour_buys: dict[int, dict[int, list[str]]] = defaultdict(
+        lambda: defaultdict(list))
+    inserted_sells: dict[int, list[str]] = defaultdict(list)
+
+    for _, buy_index, sell_index, buy_year, stock, buy_price in sorted(
+            candidates, reverse=True):
+        route_year = blocks[buy_index][0]
+        travel = 2 * abs(route_year - buy_year)
+        if travel > spare_energy:
+            continue
+        available = (timeline[buy_year][stock]["qty"]
+                     - bought[(buy_year, stock)]
+                     - extra_bought[(buy_year, stock)])
+        if available <= 0:
+            continue
+
+        slack_values = [
+            cap_after[i] - used_after[i]
+            for i in range(buy_index, sell_index)
+        ]
+        slack_values.extend(
+            block_min[i] - used_block[i]
+            for i in range(buy_index + 1, sell_index)
+        )
+        cash_slack = min(slack_values) if slack_values else 0
+        qty = min(available, cash_slack // buy_price)
+        if qty <= 0:
+            continue
+
+        cost = qty * buy_price
+        for i in range(buy_index, sell_index):
+            used_after[i] += cost
+        for i in range(buy_index + 1, sell_index):
+            used_block[i] += cost
+        spare_energy -= travel
+        extra_bought[(buy_year, stock)] += qty
+        detour_buys[buy_index][buy_year].append(buy_action(stock, qty))
+        inserted_sells[sell_index].append(sell_action(stock, qty))
+
+    if not detour_buys and not inserted_sells:
+        return actions
+
+    out: list[str] = []
+    for index, (year, block_actions, jump, _) in enumerate(blocks):
+        out.extend(sorted(inserted_sells.get(index, [])))
+        out.extend(block_actions)
+        for buy_year, buy_actions in sorted(detour_buys.get(index, {}).items()):
+            out.append(jump_action(year, buy_year))
+            out.extend(sorted(buy_actions))
+            out.append(jump_action(buy_year, year))
+        if jump is not None:
+            out.append(jump)
+    return out
+
+
+def action_energy_cost(actions: list[str]) -> int:
+    cost = 0
+    for action in actions:
+        parsed = parse_action(action)
+        if parsed is None or parsed[0] != "j":
+            continue
+        _, src, dst = parsed
+        cost += abs(int(src) - int(dst))
+    return cost
 
 
 def action_blocks(actions: list[str]) -> list[tuple[int, list[str], str | None,
